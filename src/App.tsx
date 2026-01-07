@@ -84,19 +84,25 @@ const SSLReader = () => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [chainData, setChainData] = useState<{ subjectCN: string, issuerCN: string, pem: string }[]>([]);
 
   const reorderPEMs = useCallback((pemString: string) => {
     const pemBlocks = pemString.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g);
-    if (!pemBlocks || pemBlocks.length < 1) return pemString;
+    if (!pemBlocks || pemBlocks.length < 1) return { text: pemString, items: [] };
 
     try {
       const parsedCerts = pemBlocks.map(pem => {
-        const cert = forge.pki.certificateFromPem(pem);
+        // Strip comments for forge parser
+        const cleanPem = pem.split('\n').filter(l => !l.trim().startsWith('#')).join('\n');
+        const cert = forge.pki.certificateFromPem(cleanPem);
         const subjectCN = cert.subject.getField('CN')?.value || 'Unknown';
         const issuerCN = cert.issuer.getField('CN')?.value || 'Unknown';
 
         return {
           pem: pem.trim(),
+          cleanPem: cleanPem.trim(),
+          subjectCN,
+          issuerCN,
           comment: `# Subject: ${subjectCN}\n# Issuer: ${issuerCN}`,
           cert,
           subjectHash: forge.md.sha1.create().update(cert.subject.attributes.map(a => `${a.name}:${a.value}`).join('|')).digest().toHex(),
@@ -107,12 +113,12 @@ const SSLReader = () => {
       let endEntity = parsedCerts.find(c => !parsedCerts.some(other => other.issuerHash === c.subjectHash && other !== c));
       if (!endEntity) endEntity = parsedCerts[0];
 
-      const reordered: { pem: string, comment: string }[] = [];
+      const reordered: typeof parsedCerts = [];
       let current: any = endEntity;
       const visited = new Set();
 
       while (current && !visited.has(current.pem)) {
-        reordered.push({ pem: current.pem, comment: current.comment });
+        reordered.push(current);
         visited.add(current.pem);
         const issuer = parsedCerts.find(c => c.subjectHash === current?.issuerHash && c !== current);
         current = issuer || null;
@@ -120,19 +126,26 @@ const SSLReader = () => {
 
       parsedCerts.forEach(c => {
         if (!visited.has(c.pem)) {
-          reordered.push({ pem: c.pem, comment: c.comment });
+          reordered.push(c);
         }
       });
 
-      return reordered.map(item => `${item.comment}\n${item.pem}`).join('\n\n');
+      return {
+        text: reordered.map(item => `${item.comment}\n${item.pem}`).join('\n\n'),
+        items: reordered.map(item => ({ subjectCN: item.subjectCN, issuerCN: item.issuerCN, pem: item.pem }))
+      };
     } catch (e) {
       console.error('Reorder failed', e);
-      return pemString;
+      return { text: pemString, items: [] };
     }
   }, []);
 
   const parseCert = useCallback((rawCert?: string) => {
-    const certToParse = rawCert || input.split('-----END CERTIFICATE-----')[0] + '-----END CERTIFICATE-----';
+    let certToParse = rawCert || input.split('-----END CERTIFICATE-----')[0] + '-----END CERTIFICATE-----';
+
+    // Strip comments for forge parser
+    certToParse = certToParse.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
+
     if (!certToParse.trim() || certToParse.length < 50) {
       setCertData(null);
       setError(null);
@@ -156,7 +169,7 @@ const SSLReader = () => {
       setCertData(data);
       setError(null);
     } catch (err: any) {
-      setError('Invalid certificate format. Please provide a valid PEM encoded certificate.');
+      setError('Invalid certificate format. Please check your PEM input.');
       setCertData(null);
     }
   }, [input]);
@@ -188,10 +201,10 @@ const SSLReader = () => {
         readCount++;
         if (readCount === certFiles.length) {
           const sorted = reorderPEMs(combinedPem.trim());
-          setInput(sorted);
-          const blocks = sorted.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g);
-          if (blocks) setChain(blocks);
-          parseCert(sorted.split('-----END CERTIFICATE-----')[0] + '-----END CERTIFICATE-----');
+          setInput(sorted.text);
+          setChainData(sorted.items);
+          setChain(sorted.items.map(i => i.pem));
+          parseCert(sorted.items[0]?.pem);
         }
       };
       reader.readAsText(file);
@@ -209,10 +222,10 @@ const SSLReader = () => {
 
   const handleReorder = useCallback(() => {
     const sorted = reorderPEMs(input);
-    setInput(sorted);
-    const blocks = sorted.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g);
-    if (blocks) setChain(blocks);
-    parseCert(sorted.split('-----END CERTIFICATE-----')[0] + '-----END CERTIFICATE-----');
+    setInput(sorted.text);
+    setChainData(sorted.items);
+    setChain(sorted.items.map(i => i.pem));
+    parseCert(sorted.items[0]?.pem);
     setError(null);
   }, [input, reorderPEMs, parseCert]);
 
@@ -232,12 +245,12 @@ const SSLReader = () => {
       }
       const combinedChain = (data.chain || []).join('\n\n');
       const sorted = reorderPEMs(combinedChain);
-      setInput(sorted);
-      const blocks = sorted.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g);
-      if (blocks) setChain(blocks);
+      setInput(sorted.text);
+      setChainData(sorted.items);
+      setChain(sorted.items.map(i => i.pem));
       setAuthorized(data.authorized);
       setAuthError(data.authError);
-      parseCert(sorted.split('-----END CERTIFICATE-----')[0] + '-----END CERTIFICATE-----');
+      parseCert(sorted.items[0]?.pem);
     } catch (err: any) {
       setError(err.message || 'Failed to fetch certificate');
       setCertData(null);
@@ -415,6 +428,63 @@ const SSLReader = () => {
                   </div>
                 </div>
               </motion.div>
+            )}
+
+            {chainData.length > 0 && (
+              <div className="mt-8 space-y-6">
+                <p className="text-xs font-bold text-slate-500 uppercase tracking-widest px-1">Individual Certificates in Chain</p>
+                {chainData.map((item, idx) => (
+                  <motion.div
+                    key={idx}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: idx * 0.1 }}
+                    className="card glass-panel p-6"
+                  >
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-8 h-8 rounded-xl flex items-center justify-center text-xs font-black ${idx === 0 ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' : 'bg-slate-800 text-slate-500'}`}>
+                          {idx + 1}
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                            {idx === 0 ? 'Leaf Certificate' : idx === chainData.length - 1 ? 'Root Certificate' : 'Intermediate Certificate'}
+                          </p>
+                          <h4 className="text-sm font-bold text-slate-200">{item.subjectCN}</h4>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                      <div className="p-3 bg-white-2 rounded-xl border border-white-5 overflow-hidden">
+                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Subject</p>
+                        <p className="text-xs text-slate-300 font-medium truncate" title={item.subjectCN}>{item.subjectCN}</p>
+                      </div>
+                      <div className="p-3 bg-white-2 rounded-xl border border-white-5 overflow-hidden">
+                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Issuer</p>
+                        <p className="text-xs text-slate-300 font-medium truncate" title={item.issuerCN}>{item.issuerCN}</p>
+                      </div>
+                    </div>
+
+                    <div className="relative group">
+                      <textarea
+                        readOnly
+                        className="input-control font-mono text-[10px] h-24 resize-none bg-slate-900/40 border-white-5"
+                        value={item.pem}
+                      />
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(item.pem);
+                        }}
+                        className="absolute top-2 right-2 p-2 rounded-lg bg-slate-800 text-slate-400 opacity-0 group-hover:opacity-100 transition-all hover:bg-slate-700 hover:text-white"
+                        title="Copy this certificate"
+                      >
+                        <Copy size={14} />
+                      </button>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
             )}
 
             {!certData && !loading && !error && (
