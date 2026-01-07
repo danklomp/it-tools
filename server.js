@@ -47,10 +47,7 @@ app.get('/api/fetch-cert', (req, res) => {
 
             const getPem = (cert) => {
                 if (!cert.raw) return null;
-                const pem = `-----BEGIN CERTIFICATE-----\n${cert.raw.toString('base64').match(/.{1,64}/g)?.join('\n')}\n-----END CERTIFICATE-----`;
-                const subjectCN = cert.subject.CN || 'Unknown';
-                const issuerCN = cert.issuer.CN || 'Unknown';
-                return `# Subject: ${subjectCN}\n# Issuer: ${issuerCN}\n${pem}`;
+                return `-----BEGIN CERTIFICATE-----\n${cert.raw.toString('base64').match(/.{1,64}/g)?.join('\n')}\n-----END CERTIFICATE-----`;
             };
 
             const chain = [];
@@ -67,9 +64,36 @@ app.get('/api/fetch-cert', (req, res) => {
                 }
             }
 
+            const formatCertData = (cert) => {
+                if (!cert) return null;
+                return {
+                    subject: cert.subject,
+                    issuer: cert.issuer,
+                    valid_from: cert.valid_from,
+                    valid_to: cert.valid_to,
+                    serialNumber: cert.serialNumber,
+                    version: cert.version,
+                    fingerprint: cert.fingerprint,
+                    pem: getPem(cert)
+                };
+            };
+
+            const fullChainDetails = [];
+            current = peerCert;
+            while (current) {
+                fullChainDetails.push(formatCertData(current));
+                if (current.issuerCertificate && current.issuerCertificate !== current) {
+                    current = current.issuerCertificate;
+                } else {
+                    current = null;
+                }
+            }
+
             res.json({
                 pem: getPem(peerCert),
+                details: formatCertData(peerCert),
                 chain: chain,
+                chainDetails: fullChainDetails,
                 authorized: authorized,
                 authError: authError
             });

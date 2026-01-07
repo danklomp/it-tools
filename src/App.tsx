@@ -131,8 +131,8 @@ const SSLReader = () => {
       });
 
       return {
-        text: reordered.map(item => `${item.comment}\n${item.pem}`).join('\n\n'),
-        items: reordered.map(item => ({ subjectCN: item.subjectCN, issuerCN: item.issuerCN, pem: item.pem }))
+        text: reordered.map(item => item.cleanPem).join('\n\n'),
+        items: reordered.map(item => ({ subjectCN: item.subjectCN, issuerCN: item.issuerCN, pem: item.cleanPem }))
       };
     } catch (e) {
       console.error('Reorder failed', e);
@@ -245,12 +245,43 @@ const SSLReader = () => {
       }
       const combinedChain = (data.chain || []).join('\n\n');
       const sorted = reorderPEMs(combinedChain);
-      setInput(sorted.text);
-      setChainData(sorted.items);
-      setChain(sorted.items.map(i => i.pem));
+
+      setInput(sorted.text || combinedChain);
       setAuthorized(data.authorized);
       setAuthError(data.authError);
-      parseCert(sorted.items[0]?.pem);
+      setChain(data.chain || []);
+
+      if (data.chainDetails && data.chainDetails.length > 0) {
+        // Map backend details to frontend format
+        const items = data.chainDetails.map((d: any) => ({
+          subjectCN: d.subject?.CN || 'Unknown',
+          issuerCN: d.issuer?.CN || 'Unknown',
+          pem: d.pem
+        }));
+        setChainData(items);
+
+        const leaf = data.chainDetails[0];
+        setCertData({
+          subject: (leaf.subject as any) || {},
+          issuer: (leaf.issuer as any) || {},
+          validFrom: new Date(leaf.valid_from),
+          validTo: new Date(leaf.valid_to),
+          serialNumber: leaf.serialNumber,
+          version: leaf.version,
+          pem: leaf.pem
+        });
+      } else if (data.details) {
+        // Fallback for single cert
+        setCertData({
+          subject: (data.details.subject as any) || {},
+          issuer: (data.details.issuer as any) || {},
+          validFrom: new Date(data.details.valid_from),
+          validTo: new Date(data.details.valid_to),
+          serialNumber: data.details.serialNumber,
+          version: data.details.version,
+          pem: data.pem
+        });
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to fetch certificate');
       setCertData(null);
@@ -259,11 +290,8 @@ const SSLReader = () => {
     }
   };
 
-  useEffect(() => {
-    if (input.includes('-----BEGIN CERTIFICATE-----')) {
-      parseCert();
-    }
-  }, [input, parseCert]);
+  // Removed automatic re-parsing to allow backend data to persist
+  // The parseCert is now explicitly called on button clicks or drops.
 
   const InfoRow = ({ label, value, icon: Icon }: { label: string, value: string, icon: any }) => (
     <div className="flex items-center justify-between py-3 border-b border-white-5 last:border-0">
