@@ -1,24 +1,25 @@
-# Build Frontend
-FROM node:20-alpine AS frontend-builder
-WORKDIR /app/client
-COPY client/package*.json ./
+# Build stage
+FROM node:20-alpine as build
+
+WORKDIR /app
+
+COPY package*.json ./
 RUN npm install
-COPY client/ ./
+
+COPY . .
 RUN npm run build
 
-# Build Backend/Final Image
+# Production stage
 FROM node:20-alpine
+
 WORKDIR /app
-# Install ping and other network tools
-RUN apk add --no-cache iputils
 
-COPY server/package*.json ./server/
-RUN cd server && npm install --production
+COPY package*.json ./
+RUN npm install --production
 
-COPY server/ ./server/
-COPY --from=frontend-builder /app/client/dist ./client/dist
+COPY --from=build /app/dist ./dist
+COPY server.js ./
 
-ENV PORT=3001
 EXPOSE 3001
 
-CMD ["node", "server/index.js"]
+CMD ["node", "server.js"]
