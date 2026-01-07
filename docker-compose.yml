@@ -1,0 +1,7 @@
+services:
+  it-tools:
+    build: .
+    ports:
+      - "3001:3001"
+    restart: always
+    container_name: it-tools-hub
